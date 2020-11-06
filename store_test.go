@@ -19,7 +19,7 @@ import (
 )
 
 func Test_New(t *testing.T) {
-	s := New(&storm.DB{}, "test")
+	s := New(&storm.DB{})
 	require.NotNil(t, s)
 	assert.NotNil(t, s.db)
 }

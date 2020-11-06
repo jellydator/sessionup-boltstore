@@ -16,7 +16,7 @@ type StormStore struct {
 }
 
 // New creates a returns a fresh intance of StormStore.
-func New(db *storm.DB, bucket string) *StormStore {
+func New(db *storm.DB) *StormStore {
 	return &StormStore{
 		db: db,
 	}
@@ -60,7 +60,7 @@ func (st *StormStore) Create(ctx context.Context, s sessionup.Session) error {
 // FetchByID retrieves a session from the store by the provided ID.
 // The second returned value indicates whether the session was found
 // or not (true == found), error will be nil if session is not found.
-func (st *StormStore) FetchByID(ctx context.Context, id string) (sessionup.Session, bool, error) {
+func (st *StormStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
 	var r record
 	if err := st.db.One("ID", id, &r); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
