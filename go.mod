@@ -1,4 +1,4 @@
-module stormstore
+module bbolstore
 
 go 1.15
 

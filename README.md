@@ -1,26 +1,26 @@
-# sessionup-stormstore
-This is an [Storm](https://github.com/asdine/storm) session store implementation for [sessionup](https://github.com/swithek/sessionup)
+# sessionup-bboltstore
+This is an [BBolt](https://github.com/boltdb/bolt) session store implementation for [sessionup](https://github.com/swithek/sessionup)
 
 ## Installation
 
 To install simply use:
 
 ```
-go get github.com/davseby/sessionup-stormstore
+go get github.com/davseby/sessionup-bboltstore
 ```
 
 ## Usage
 
-To create and use new StormStore:
+To create and use new BBoltStore:
 
 ```go
 // quick way of opening a storm database
-db, err := storm.Open("my.db")
+db, err := bbolt.Open("my.db", 0600, nil)
 if err != nil {
       // handle error
 }
 
-store, err := stormstore.New(db)
+store, err := bboltstore.New(db)
 if err != nil {
       // handle error
 }

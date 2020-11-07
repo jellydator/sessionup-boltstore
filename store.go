@@ -1,4 +1,4 @@
-package stormstore
+package bboltstore
 
 import (
 	"context"
@@ -8,25 +8,39 @@ import (
 
 	"github.com/asdine/storm/v3"
 	"github.com/swithek/sessionup"
+	"go.etcd.io/bbolt"
 )
 
-// StormStore is a Storm implementation of sessionup.Store.
-type StormStore struct {
-	db *storm.DB
+// BBoltStore is a bbolt implementation of sessionup.Store.
+type BBoltStore struct {
+	db     *storm.DB
+	bucket string
 }
 
-// New creates a returns a fresh intance of StormStore.
-func New(db *storm.DB) *StormStore {
-	return &StormStore{
-		db: db,
+// New creates a returns a fresh intance of BBoltStore.
+func New(db *bbolt.DB, bucket string) (*BBoltStore, error) {
+	if bucket == "" {
+		return nil, errors.New("invalid bucket name")
 	}
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	if err != nil {
+		return nil, err
+	}
+
+	return &BBoltStore{
+		db:     sdb,
+		bucket: bucket,
+	}, nil
 }
 
 // Create inserts provided session into the store and ensures
 // that it is deleted when expiration time is due.
-func (st *StormStore) Create(ctx context.Context, s sessionup.Session) error {
+func (bs *BBoltStore) Create(ctx context.Context, s sessionup.Session) error {
+	b := bs.db.From(bs.bucket)
+
 	r := record{}
-	if err := st.db.One("ID", s.ID, &r); err != nil {
+	if err := b.One("ID", s.ID, &r); err != nil {
 		if !errors.Is(err, storm.ErrNotFound) {
 			// unlikely to happen
 			return err
@@ -39,7 +53,7 @@ func (st *StormStore) Create(ctx context.Context, s sessionup.Session) error {
 
 	// add new record
 	r = newRecord(s)
-	if err := st.db.Save(&r); err != nil {
+	if err := b.Save(&r); err != nil {
 		// unlikely to happen
 		return err
 	}
@@ -50,7 +64,7 @@ func (st *StormStore) Create(ctx context.Context, s sessionup.Session) error {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(s.ExpiresAt)):
-			_ = st.db.DeleteStruct(&r)
+			_ = b.DeleteStruct(&r)
 		}
 	}()
 
@@ -60,9 +74,11 @@ func (st *StormStore) Create(ctx context.Context, s sessionup.Session) error {
 // FetchByID retrieves a session from the store by the provided ID.
 // The second returned value indicates whether the session was found
 // or not (true == found), error will be nil if session is not found.
-func (st *StormStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
+func (bs *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
+	b := bs.db.From(bs.bucket)
+
 	var r record
-	if err := st.db.One("ID", id, &r); err != nil {
+	if err := b.One("ID", id, &r); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return sessionup.Session{}, false, nil
 		}
@@ -76,9 +92,11 @@ func (st *StormStore) FetchByID(_ context.Context, id string) (sessionup.Session
 
 // FetchByUserKey retrieves all sessions associated with the
 // provided user key. If none are found, both return values will be nil.
-func (st *StormStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
+func (bs *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
+	b := bs.db.From(bs.bucket)
+
 	var rr []record
-	if err := st.db.Find("UserKey", key, &rr); err != nil {
+	if err := b.Find("UserKey", key, &rr); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil, nil
 		}
@@ -97,9 +115,11 @@ func (st *StormStore) FetchByUserKey(_ context.Context, key string) ([]sessionup
 
 // DeleteByID deletes the session from the store by the provided ID.
 // If session is not found, this function will be no-op.
-func (st *StormStore) DeleteByID(_ context.Context, id string) error {
+func (bs *BBoltStore) DeleteByID(_ context.Context, id string) error {
+	b := bs.db.From(bs.bucket)
+
 	r := record{}
-	if err := st.db.One("ID", id, &r); err != nil {
+	if err := b.One("ID", id, &r); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil
 		}
@@ -108,7 +128,7 @@ func (st *StormStore) DeleteByID(_ context.Context, id string) error {
 		return err
 	}
 
-	if err := st.db.DeleteStruct(&r); err != nil {
+	if err := b.DeleteStruct(&r); err != nil {
 		// unlikely to happen
 		return err
 	}
@@ -119,9 +139,11 @@ func (st *StormStore) DeleteByID(_ context.Context, id string) error {
 // DeleteByUserKey deletes all sessions associated with the provided user key,
 // except those whose IDs are provided as last argument.
 // If none are found, this function will no-op.
-func (st *StormStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
+func (bs *BBoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
+	b := bs.db.From(bs.bucket)
+
 	var rr []*record
-	if err := st.db.Find("UserKey", key, &rr); err != nil {
+	if err := b.Find("UserKey", key, &rr); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil
 		}
@@ -130,7 +152,7 @@ func (st *StormStore) DeleteByUserKey(_ context.Context, key string, expIDs ...s
 		return err
 	}
 
-	tx, err := st.db.Begin(true)
+	tx, err := b.Begin(true)
 	if err != nil {
 		return err
 	}
@@ -159,7 +181,7 @@ Outer:
 	return nil
 }
 
-// record is used to store session data in storm store.
+// record is used to store session data in bbolt store.
 type record struct {
 	// Current specifies whether this session's ID
 	// matches the ID stored in the request's cookie or not.
