@@ -20,24 +20,52 @@ import (
 
 func Test_New(t *testing.T) {
 	// invalid bucket
-	s, err := New(&bbolt.DB{}, "")
-	require.Error(t, err)
-	require.Nil(t, s)
+	s, err := New(&bbolt.DB{}, "", time.Second)
+	require.Equal(t, errors.New("invalid bucket name"), err)
+	assert.Nil(t, s)
+
+	// invalid clean up interval
+	s, err = New(&bbolt.DB{}, "ab", time.Second*-1)
+	require.Equal(t, errors.New("invalid clean up interval"), err)
+	assert.Nil(t, s)
 
 	// invalid db
-	s, err = New(&bbolt.DB{}, "b")
+	s, err = New(&bbolt.DB{}, "b", time.Second)
 	require.Error(t, err)
-	require.Nil(t, s)
+	assert.Nil(t, s)
 
 	// success
 	db, err := bbolt.Open(filepath.Join(t.TempDir(), "test.db"), 0600, nil)
 	require.NoError(t, err)
 
-	s, err = New(db, "b")
+	s, err = New(db, "b", time.Millisecond*20)
 	require.NoError(t, err)
-	require.NotNil(t, s)
-	require.NotNil(t, s.db)
-	assert.Equal(t, "b", s.bucket)
+	assert.NotNil(t, s)
+	assert.NotNil(t, s.db)
+	assert.NotNil(t, s.errChan)
+	assert.NotNil(t, s.closeChan)
+
+	// auto cleanUp deletes old records
+	r1 := stubRecord("ABC", "1", time.Now())
+	require.NoError(t, s.db.Save(&r1))
+
+	time.Sleep(time.Millisecond * 30)
+
+	c, err := s.db.Count(&record{})
+	require.NoError(t, err)
+	assert.Zero(t, c)
+
+	// close closes auto cleanUp
+	r2 := stubRecord("ABC", "1", time.Now())
+	require.NoError(t, s.db.Save(&r2))
+
+	s.Close()
+
+	time.Sleep(time.Millisecond * 30)
+
+	c, err = s.db.Count(&record{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, c)
 }
 
 func Test_Store(t *testing.T) {
@@ -49,7 +77,6 @@ type Suite struct {
 
 	tempDir string
 
-	n  storm.Node
 	st *BBoltStore
 	db *bbolt.DB
 }
@@ -71,13 +98,11 @@ func (s *Suite) SetupTest() {
 	db, err := storm.Open("", storm.UseDB(s.db))
 	s.Require().NoError(err)
 
-	s.st = &BBoltStore{db: db, bucket: "test"}
-
-	s.n = db.From("test")
+	s.st = &BBoltStore{db: db}
 }
 
 func (s *Suite) TearDownTest() {
-	err := s.n.Drop(&record{})
+	err := s.st.db.Drop(&record{})
 	if errors.Is(err, bbolt.ErrBucketNotFound) {
 		return
 	}
@@ -85,15 +110,15 @@ func (s *Suite) TearDownTest() {
 	s.Require().NoError(err)
 }
 
-func (s *Suite) Test_StormStore_Create() {
+func (s *Suite) Test_BBoltStore_Create() {
 	// duplicate id
 	r1 := stubRecord("ABC", "1", time.Now())
-	s.Require().NoError(s.n.Save(&r1))
+	s.Require().NoError(s.st.db.Save(&r1))
 
 	s1 := stubSession("ABC", "1", time.Now())
 	err := s.st.Create(context.Background(), s1)
 	s.Assert().Equal(sessionup.ErrDuplicateID, err)
-	s.Require().NoError(s.n.DeleteStruct(&r1))
+	s.Require().NoError(s.st.db.DeleteStruct(&r1))
 
 	// success
 	s2 := stubSession("ABC", "2", time.Now().Add(time.Millisecond*3))
@@ -101,24 +126,12 @@ func (s *Suite) Test_StormStore_Create() {
 	s.Assert().NoError(err)
 
 	time.Sleep(time.Millisecond * 5)
-	c, err := s.n.Count(&sessionup.Session{})
-	s.Require().NoError(err)
-	s.Require().Zero(c)
-
-	// successful context cancelation
-	ctx, cancel := context.WithCancel(context.Background())
-	s3 := stubSession("ABC", "2", time.Now().Add(time.Millisecond*15))
-	err = s.st.Create(ctx, s3)
-	s.Assert().NoError(err)
-	cancel()
-
-	time.Sleep(time.Millisecond * 20)
-	c, err = s.n.Count(&record{})
+	c, err := s.st.db.Count(&record{})
 	s.Require().NoError(err)
 	s.Require().Equal(1, c)
 }
 
-func (s *Suite) Test_StormStore_FetchByID() {
+func (s *Suite) Test_BBoltStore_FetchByID() {
 	// not found
 	s1, ok, err := s.st.FetchByID(context.Background(), "3")
 	s.Assert().Empty(s1)
@@ -127,7 +140,7 @@ func (s *Suite) Test_StormStore_FetchByID() {
 
 	// success
 	r1 := stubRecord("ABC", "1", time.Now().Add(time.Millisecond*3))
-	s.Require().NoError(s.n.Save(&r1))
+	s.Require().NoError(s.st.db.Save(&r1))
 
 	s1, ok, err = s.st.FetchByID(context.Background(), "1")
 	s.Require().True(ok)
@@ -135,7 +148,7 @@ func (s *Suite) Test_StormStore_FetchByID() {
 	equalSession(s.T(), r1.extractSession(), s1)
 }
 
-func (s *Suite) Test_StormStore_FetchByUserKey() {
+func (s *Suite) Test_BBoltStore_FetchByUserKey() {
 	// not found
 	act, err := s.st.FetchByUserKey(context.Background(), "3")
 	s.Assert().Nil(act)
@@ -145,12 +158,12 @@ func (s *Suite) Test_StormStore_FetchByUserKey() {
 	res := make([]sessionup.Session, 3)
 	for i := range []int{0, 1, 2} {
 		r := stubRecord("D", strconv.Itoa(i), time.Now())
-		s.Require().NoError(s.n.Save(&r))
+		s.Require().NoError(s.st.db.Save(&r))
 		res[i] = r.extractSession()
 	}
 
 	r := stubRecord("B", "4", time.Now())
-	s.Require().NoError(s.n.Save(&r))
+	s.Require().NoError(s.st.db.Save(&r))
 
 	act, err = s.st.FetchByUserKey(context.Background(), "D")
 	s.Assert().NoError(err)
@@ -161,7 +174,7 @@ func (s *Suite) Test_StormStore_FetchByUserKey() {
 	}
 }
 
-func (s *Suite) Test_StormStore_DeleteByID() {
+func (s *Suite) Test_BBoltStore_DeleteByID() {
 	// not found
 	err := s.st.DeleteByID(context.Background(), "3")
 	s.Assert().NoError(err)
@@ -170,7 +183,7 @@ func (s *Suite) Test_StormStore_DeleteByID() {
 	var res []sessionup.Session
 	for i := range []int{0, 1, 2} {
 		r := stubRecord("D", strconv.Itoa(i), time.Now())
-		s.Require().NoError(s.n.Save(&r))
+		s.Require().NoError(s.st.db.Save(&r))
 
 		if i != 1 {
 			res = append(res, r.extractSession())
@@ -181,7 +194,7 @@ func (s *Suite) Test_StormStore_DeleteByID() {
 	s.Assert().NoError(err)
 
 	var act []*record
-	s.Assert().NoError(s.n.All(&act))
+	s.Assert().NoError(s.st.db.All(&act))
 	s.Assert().Len(act, 2)
 
 	for i := range res {
@@ -189,7 +202,7 @@ func (s *Suite) Test_StormStore_DeleteByID() {
 	}
 }
 
-func (s *Suite) Test_StormStore_DeleteByUserKey() {
+func (s *Suite) Test_BBoltStore_DeleteByUserKey() {
 	// not found
 	err := s.st.DeleteByUserKey(context.Background(), "3")
 	s.Assert().NoError(err)
@@ -198,7 +211,7 @@ func (s *Suite) Test_StormStore_DeleteByUserKey() {
 	var res []sessionup.Session
 	for i, k := range []string{"A", "D", "A", "C", "A", "A"} {
 		r := stubRecord(k, strconv.Itoa(i), time.Now())
-		s.Require().NoError(s.n.Save(&r))
+		s.Require().NoError(s.st.db.Save(&r))
 
 		if k != "A" || i == 0 || i == 4 {
 			res = append(res, r.extractSession())
@@ -209,8 +222,52 @@ func (s *Suite) Test_StormStore_DeleteByUserKey() {
 	s.Assert().NoError(err)
 
 	var act []*record
-	s.Assert().NoError(s.n.All(&act))
+	s.Assert().NoError(s.st.db.All(&act))
 	s.Require().Len(act, 4)
+
+	for i := range act {
+		equalSession(s.T(), res[i], act[i].extractSession())
+	}
+}
+
+func Test_BBoltStore_CleanUpErr(t *testing.T) {
+	b := BBoltStore{
+		errChan: make(chan error),
+	}
+
+	err := errors.New("abc")
+
+	go func() {
+		b.errChan <- err
+	}()
+
+	time.Sleep(time.Millisecond * 3)
+
+	assert.Equal(t, err, <-b.CleanUpErr())
+}
+
+func (s *Suite) Test_BBoltStore_cleanUp() {
+	// not found
+	err := s.st.cleanUp()
+	s.Assert().NoError(err)
+
+	// success
+	var res []sessionup.Session
+	for i, k := range []time.Duration{time.Second, time.Second * -1, time.Second} {
+		r := stubRecord("A", strconv.Itoa(i), time.Now().Add(k))
+		s.Require().NoError(s.st.db.Save(&r))
+
+		if i != 1 {
+			res = append(res, r.extractSession())
+		}
+	}
+
+	err = s.st.cleanUp()
+	s.Assert().NoError(err)
+
+	var act []*record
+	s.Assert().NoError(s.st.db.All(&act))
+	s.Require().Len(act, 2)
 
 	for i := range act {
 		equalSession(s.T(), res[i], act[i].extractSession())

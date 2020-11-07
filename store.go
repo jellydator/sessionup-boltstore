@@ -13,14 +13,22 @@ import (
 
 // BBoltStore is a bbolt implementation of sessionup.Store.
 type BBoltStore struct {
-	db     *storm.DB
-	bucket string
+	db        storm.Node
+	errChan   chan error
+	closeChan chan struct{}
 }
 
 // New creates a returns a fresh intance of BBoltStore.
-func New(db *bbolt.DB, bucket string) (*BBoltStore, error) {
+// Second parameter is a bucket name in which you want your sessions
+// to be stored and managed.
+// Third parameter is an interval time between each clean up.
+func New(db *bbolt.DB, bucket string, cleanUpInterval time.Duration) (*BBoltStore, error) {
 	if bucket == "" {
 		return nil, errors.New("invalid bucket name")
+	}
+
+	if cleanUpInterval < 0 {
+		return nil, errors.New("invalid clean up interval")
 	}
 
 	sdb, err := storm.Open("", storm.UseDB(db))
@@ -28,19 +36,34 @@ func New(db *bbolt.DB, bucket string) (*BBoltStore, error) {
 		return nil, err
 	}
 
-	return &BBoltStore{
-		db:     sdb,
-		bucket: bucket,
-	}, nil
+	b := &BBoltStore{
+		db:        sdb.From(bucket),
+		errChan:   make(chan error),
+		closeChan: make(chan struct{}),
+	}
+
+	go func() {
+		for {
+			select {
+			case <-b.closeChan:
+				return
+			case <-time.After(cleanUpInterval):
+				if err := b.cleanUp(); err != nil {
+					// unlikely to happen
+					b.errChan <- err
+				}
+			}
+		}
+	}()
+
+	return b, nil
 }
 
 // Create inserts provided session into the store and ensures
 // that it is deleted when expiration time is due.
-func (bs *BBoltStore) Create(ctx context.Context, s sessionup.Session) error {
-	b := bs.db.From(bs.bucket)
-
+func (b *BBoltStore) Create(_ context.Context, s sessionup.Session) error {
 	r := record{}
-	if err := b.One("ID", s.ID, &r); err != nil {
+	if err := b.db.One("ID", s.ID, &r); err != nil {
 		if !errors.Is(err, storm.ErrNotFound) {
 			// unlikely to happen
 			return err
@@ -51,22 +74,11 @@ func (bs *BBoltStore) Create(ctx context.Context, s sessionup.Session) error {
 		return sessionup.ErrDuplicateID
 	}
 
-	// add new record
 	r = newRecord(s)
-	if err := b.Save(&r); err != nil {
+	if err := b.db.Save(&r); err != nil {
 		// unlikely to happen
 		return err
 	}
-
-	// schedule record for deletion
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Until(s.ExpiresAt)):
-			_ = b.DeleteStruct(&r)
-		}
-	}()
 
 	return nil
 }
@@ -74,11 +86,9 @@ func (bs *BBoltStore) Create(ctx context.Context, s sessionup.Session) error {
 // FetchByID retrieves a session from the store by the provided ID.
 // The second returned value indicates whether the session was found
 // or not (true == found), error will be nil if session is not found.
-func (bs *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
-	b := bs.db.From(bs.bucket)
-
+func (b *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
 	var r record
-	if err := b.One("ID", id, &r); err != nil {
+	if err := b.db.One("ID", id, &r); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return sessionup.Session{}, false, nil
 		}
@@ -92,11 +102,9 @@ func (bs *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session
 
 // FetchByUserKey retrieves all sessions associated with the
 // provided user key. If none are found, both return values will be nil.
-func (bs *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
-	b := bs.db.From(bs.bucket)
-
+func (b *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
 	var rr []record
-	if err := b.Find("UserKey", key, &rr); err != nil {
+	if err := b.db.Find("UserKey", key, &rr); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil, nil
 		}
@@ -115,11 +123,9 @@ func (bs *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup
 
 // DeleteByID deletes the session from the store by the provided ID.
 // If session is not found, this function will be no-op.
-func (bs *BBoltStore) DeleteByID(_ context.Context, id string) error {
-	b := bs.db.From(bs.bucket)
-
+func (b *BBoltStore) DeleteByID(_ context.Context, id string) error {
 	r := record{}
-	if err := b.One("ID", id, &r); err != nil {
+	if err := b.db.One("ID", id, &r); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil
 		}
@@ -128,7 +134,7 @@ func (bs *BBoltStore) DeleteByID(_ context.Context, id string) error {
 		return err
 	}
 
-	if err := b.DeleteStruct(&r); err != nil {
+	if err := b.db.DeleteStruct(&r); err != nil {
 		// unlikely to happen
 		return err
 	}
@@ -139,11 +145,9 @@ func (bs *BBoltStore) DeleteByID(_ context.Context, id string) error {
 // DeleteByUserKey deletes all sessions associated with the provided user key,
 // except those whose IDs are provided as last argument.
 // If none are found, this function will no-op.
-func (bs *BBoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
-	b := bs.db.From(bs.bucket)
-
+func (b *BBoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
 	var rr []*record
-	if err := b.Find("UserKey", key, &rr); err != nil {
+	if err := b.db.Find("UserKey", key, &rr); err != nil {
 		if errors.Is(err, storm.ErrNotFound) {
 			return nil
 		}
@@ -152,8 +156,9 @@ func (bs *BBoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...s
 		return err
 	}
 
-	tx, err := b.Begin(true)
+	tx, err := b.db.Begin(true)
 	if err != nil {
+		// unlikely to happen
 		return err
 	}
 
@@ -170,6 +175,54 @@ Outer:
 		if err := tx.DeleteStruct(rr[i]); err != nil {
 			// unlikely to happen
 			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		// unlikely to happen
+		return err
+	}
+
+	return nil
+}
+
+// CleanUpErr returns error channel.
+func (b BBoltStore) CleanUpErr() <-chan error {
+	return b.errChan
+}
+
+// Close closes BBoltStore.
+func (b *BBoltStore) Close() error {
+	close(b.errChan)
+	close(b.closeChan)
+
+	return nil
+}
+
+// cleanUp removes all expired records from the store.
+func (b *BBoltStore) cleanUp() error {
+	var rr []*record
+	if err := b.db.All(&rr); err != nil {
+		// unlikely to happen
+		return err
+	}
+
+	n := time.Now()
+
+	tx, err := b.db.Begin(true)
+	if err != nil {
+		// unlikely to happen
+		return err
+	}
+
+	defer tx.Rollback() //nolint:errcheck // error checking is not needed.
+
+	for i := range rr {
+		if rr[i].ExpiresAt.Before(n) {
+			if err := tx.DeleteStruct(rr[i]); err != nil {
+				// unlikely to happen
+				return err
+			}
 		}
 	}
 
