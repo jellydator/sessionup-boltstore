@@ -1,4 +1,4 @@
-package bboltstore
+package boltstore
 
 import (
 	"context"
@@ -15,43 +15,64 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/swithek/sessionup"
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
 func Test_New(t *testing.T) {
 	// invalid bucket
-	s, err := New(&bbolt.DB{}, "", time.Second)
+	s, err := New(&bolt.DB{}, "", time.Second)
 	require.Equal(t, errors.New("invalid bucket name"), err)
 	assert.Nil(t, s)
 
 	// invalid clean up interval
-	s, err = New(&bbolt.DB{}, "ab", time.Second*-1)
-	require.Equal(t, errors.New("invalid clean up interval"), err)
+	s, err = New(&bolt.DB{}, "ab", time.Second*-1)
+	require.Equal(t, errors.New("invalid cleanup interval"), err)
 	assert.Nil(t, s)
 
 	// invalid db
-	s, err = New(&bbolt.DB{}, "b", time.Second)
+	s, err = New(&bolt.DB{}, "b", time.Second)
 	require.Error(t, err)
 	assert.Nil(t, s)
 
 	// success
-	db, err := bbolt.Open(filepath.Join(t.TempDir(), "test.db"), 0600, nil)
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "test.db"), 0601, nil)
 	require.NoError(t, err)
 
-	s, err = New(db, "b", time.Millisecond*20)
+	s, err = New(db, "b", 0)
 	require.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.NotNil(t, s.db)
-	assert.NotNil(t, s.errChan)
-	assert.NotNil(t, s.closeChan)
+	assert.NotNil(t, s.errCh)
+	assert.NotNil(t, s.closeCh)
 
-	// auto cleanUp deletes old records
+	// auto cleanup doesn't delete old records
 	r1 := stubRecord("ABC", "1", time.Now())
 	require.NoError(t, s.db.Save(&r1))
 
 	time.Sleep(time.Millisecond * 30)
 
 	c, err := s.db.Count(&record{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, c)
+
+	// success
+	db, err = bolt.Open(filepath.Join(t.TempDir(), "test2.db"), 0600, nil)
+	require.NoError(t, err)
+
+	s, err = New(db, "b", time.Millisecond*20)
+	require.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.NotNil(t, s.db)
+	assert.NotNil(t, s.errCh)
+	assert.NotNil(t, s.closeCh)
+
+	// auto cleanUp deletes old records
+	r1 = stubRecord("ABC", "1", time.Now())
+	require.NoError(t, s.db.Save(&r1))
+
+	time.Sleep(time.Millisecond * 30)
+
+	c, err = s.db.Count(&record{})
 	require.NoError(t, err)
 	assert.Zero(t, c)
 
@@ -77,14 +98,14 @@ type Suite struct {
 
 	tempDir string
 
-	st *BBoltStore
-	db *bbolt.DB
+	st *BoltStore
+	db *bolt.DB
 }
 
 func (s *Suite) SetupSuite() {
 	s.tempDir = s.T().TempDir()
 
-	db, err := bbolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
 	s.Require().NoError(err)
 	s.Require().NotNil(db)
 	s.db = db
@@ -98,40 +119,38 @@ func (s *Suite) SetupTest() {
 	db, err := storm.Open("", storm.UseDB(s.db))
 	s.Require().NoError(err)
 
-	s.st = &BBoltStore{db: db}
+	s.st = &BoltStore{db: db}
 }
 
 func (s *Suite) TearDownTest() {
 	err := s.st.db.Drop(&record{})
-	if errors.Is(err, bbolt.ErrBucketNotFound) {
+	if errors.Is(err, bolt.ErrBucketNotFound) {
 		return
 	}
 
 	s.Require().NoError(err)
 }
 
-func (s *Suite) Test_BBoltStore_Create() {
+func (s *Suite) Test_BoltStore_Create() {
 	// duplicate id
-	r1 := stubRecord("ABC", "1", time.Now())
+	r1 := stubRecord("ABC", "abc", time.Now())
 	s.Require().NoError(s.st.db.Save(&r1))
 
-	s1 := stubSession("ABC", "1", time.Now())
-	err := s.st.Create(context.Background(), s1)
+	err := s.st.Create(context.Background(), r1.extractSession())
 	s.Assert().Equal(sessionup.ErrDuplicateID, err)
 	s.Require().NoError(s.st.db.DeleteStruct(&r1))
 
 	// success
-	s2 := stubSession("ABC", "2", time.Now().Add(time.Millisecond*3))
+	s2 := stubSession("ABC", "2", time.Now())
 	err = s.st.Create(context.Background(), s2)
 	s.Assert().NoError(err)
 
-	time.Sleep(time.Millisecond * 5)
 	c, err := s.st.db.Count(&record{})
 	s.Require().NoError(err)
 	s.Require().Equal(1, c)
 }
 
-func (s *Suite) Test_BBoltStore_FetchByID() {
+func (s *Suite) Test_BoltStore_FetchByID() {
 	// not found
 	s1, ok, err := s.st.FetchByID(context.Background(), "3")
 	s.Assert().Empty(s1)
@@ -148,7 +167,7 @@ func (s *Suite) Test_BBoltStore_FetchByID() {
 	equalSession(s.T(), r1.extractSession(), s1)
 }
 
-func (s *Suite) Test_BBoltStore_FetchByUserKey() {
+func (s *Suite) Test_BoltStore_FetchByUserKey() {
 	// not found
 	act, err := s.st.FetchByUserKey(context.Background(), "3")
 	s.Assert().Nil(act)
@@ -174,7 +193,7 @@ func (s *Suite) Test_BBoltStore_FetchByUserKey() {
 	}
 }
 
-func (s *Suite) Test_BBoltStore_DeleteByID() {
+func (s *Suite) Test_BoltStore_DeleteByID() {
 	// not found
 	err := s.st.DeleteByID(context.Background(), "3")
 	s.Assert().NoError(err)
@@ -202,7 +221,7 @@ func (s *Suite) Test_BBoltStore_DeleteByID() {
 	}
 }
 
-func (s *Suite) Test_BBoltStore_DeleteByUserKey() {
+func (s *Suite) Test_BoltStore_DeleteByUserKey() {
 	// not found
 	err := s.st.DeleteByUserKey(context.Background(), "3")
 	s.Assert().NoError(err)
@@ -230,23 +249,23 @@ func (s *Suite) Test_BBoltStore_DeleteByUserKey() {
 	}
 }
 
-func Test_BBoltStore_CleanUpErr(t *testing.T) {
-	b := BBoltStore{
-		errChan: make(chan error),
+func Test_BoltStore_CleanUpErr(t *testing.T) {
+	b := BoltStore{
+		errCh: make(chan error),
 	}
 
 	err := errors.New("abc")
 
 	go func() {
-		b.errChan <- err
+		b.errCh <- err
 	}()
 
 	time.Sleep(time.Millisecond * 3)
 
-	assert.Equal(t, err, <-b.CleanUpErr())
+	assert.Equal(t, err, <-b.CleanupErr())
 }
 
-func (s *Suite) Test_BBoltStore_cleanUp() {
+func (s *Suite) Test_BoltStore_cleanUp() {
 	// not found
 	err := s.st.cleanUp()
 	s.Assert().NoError(err)

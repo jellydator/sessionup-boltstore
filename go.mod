@@ -1,4 +1,4 @@
-module bbolstore
+module bolstore
 
 go 1.15
 

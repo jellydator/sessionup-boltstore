@@ -1,4 +1,4 @@
-package bboltstore
+package boltstore
 
 import (
 	"context"
@@ -6,29 +6,33 @@ import (
 	"net"
 	"time"
 
+	"github.com/asdine/storm/v3/q"
+
 	"github.com/asdine/storm/v3"
 	"github.com/swithek/sessionup"
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
 )
 
-// BBoltStore is a bbolt implementation of sessionup.Store.
-type BBoltStore struct {
-	db        storm.Node
-	errChan   chan error
-	closeChan chan struct{}
+// BoltStore is a bolt implementation of sessionup.Store.
+type BoltStore struct {
+	db      storm.Node
+	errCh   chan error
+	closeCh chan struct{}
 }
 
-// New creates a returns a fresh intance of BBoltStore.
-// Second parameter is a bucket name in which you want your sessions
-// to be stored and managed.
-// Third parameter is an interval time between each clean up.
-func New(db *bbolt.DB, bucket string, cleanUpInterval time.Duration) (*BBoltStore, error) {
+// New creates a returns a fresh intance of BoltStore.
+// bucket parameter is a bucket name in which you want your sessions
+// to be stored and managed. Cannot be an empty string.
+// cleanupInterval parameter is an interval time between each clean up. If
+// this interval is equal to zero, cleanup won't be executed. Cannot be less than
+// zero.
+func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore, error) {
 	if bucket == "" {
 		return nil, errors.New("invalid bucket name")
 	}
 
-	if cleanUpInterval < 0 {
-		return nil, errors.New("invalid clean up interval")
+	if cleanupInterval < 0 {
+		return nil, errors.New("invalid cleanup interval")
 	}
 
 	sdb, err := storm.Open("", storm.UseDB(db))
@@ -36,35 +40,39 @@ func New(db *bbolt.DB, bucket string, cleanUpInterval time.Duration) (*BBoltStor
 		return nil, err
 	}
 
-	b := &BBoltStore{
-		db:        sdb.From(bucket),
-		errChan:   make(chan error),
-		closeChan: make(chan struct{}),
+	b := &BoltStore{
+		db:      sdb.From(bucket),
+		errCh:   make(chan error),
+		closeCh: make(chan struct{}),
 	}
 
-	go func() {
-		for {
-			select {
-			case <-b.closeChan:
-				return
-			case <-time.After(cleanUpInterval):
-				if err := b.cleanUp(); err != nil {
-					// unlikely to happen
-					b.errChan <- err
+	if cleanupInterval != 0 {
+		go func() {
+			t := time.NewTicker(cleanupInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-b.closeCh:
+					return
+				case <-t.C:
+					if err := b.cleanUp(); err != nil {
+						// unlikely to happen
+						b.errCh <- err
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	return b, nil
 }
 
 // Create inserts provided session into the store and ensures
 // that it is deleted when expiration time is due.
-func (b *BBoltStore) Create(_ context.Context, s sessionup.Session) error {
-	r := record{}
+func (b *BoltStore) Create(_ context.Context, s sessionup.Session) error {
+	var r record
 	if err := b.db.One("ID", s.ID, &r); err != nil {
-		if !errors.Is(err, storm.ErrNotFound) {
+		if err = b.detectErr(err); err != nil {
 			// unlikely to happen
 			return err
 		}
@@ -77,7 +85,7 @@ func (b *BBoltStore) Create(_ context.Context, s sessionup.Session) error {
 	r = newRecord(s)
 	if err := b.db.Save(&r); err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	return nil
@@ -86,15 +94,10 @@ func (b *BBoltStore) Create(_ context.Context, s sessionup.Session) error {
 // FetchByID retrieves a session from the store by the provided ID.
 // The second returned value indicates whether the session was found
 // or not (true == found), error will be nil if session is not found.
-func (b *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
+func (b *BoltStore) FetchByID(_ context.Context, id string) (sessionup.Session, bool, error) {
 	var r record
 	if err := b.db.One("ID", id, &r); err != nil {
-		if errors.Is(err, storm.ErrNotFound) {
-			return sessionup.Session{}, false, nil
-		}
-
-		// unlikely to happen
-		return sessionup.Session{}, false, err
+		return sessionup.Session{}, false, b.detectErr(err)
 	}
 
 	return r.extractSession(), true, nil
@@ -102,15 +105,10 @@ func (b *BBoltStore) FetchByID(_ context.Context, id string) (sessionup.Session,
 
 // FetchByUserKey retrieves all sessions associated with the
 // provided user key. If none are found, both return values will be nil.
-func (b *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
+func (b *BoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.Session, error) {
 	var rr []record
 	if err := b.db.Find("UserKey", key, &rr); err != nil {
-		if errors.Is(err, storm.ErrNotFound) {
-			return nil, nil
-		}
-
-		// unlikely to happen
-		return nil, err
+		return nil, b.detectErr(err)
 	}
 
 	ss := make([]sessionup.Session, len(rr))
@@ -123,20 +121,15 @@ func (b *BBoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.
 
 // DeleteByID deletes the session from the store by the provided ID.
 // If session is not found, this function will be no-op.
-func (b *BBoltStore) DeleteByID(_ context.Context, id string) error {
+func (b *BoltStore) DeleteByID(_ context.Context, id string) error {
 	r := record{}
 	if err := b.db.One("ID", id, &r); err != nil {
-		if errors.Is(err, storm.ErrNotFound) {
-			return nil
-		}
-
-		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	if err := b.db.DeleteStruct(&r); err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	return nil
@@ -145,97 +138,99 @@ func (b *BBoltStore) DeleteByID(_ context.Context, id string) error {
 // DeleteByUserKey deletes all sessions associated with the provided user key,
 // except those whose IDs are provided as last argument.
 // If none are found, this function will no-op.
-func (b *BBoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
-	var rr []*record
-	if err := b.db.Find("UserKey", key, &rr); err != nil {
-		if errors.Is(err, storm.ErrNotFound) {
-			return nil
-		}
+func (b *BoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
+	matcher := q.And(q.Eq("UserKey", key), q.Not(q.In("ID", expIDs)))
 
-		// unlikely to happen
-		return err
+	var rr []*record
+	if err := b.db.Select(matcher).Find(&rr); err != nil {
+		return b.detectErr(err)
 	}
 
 	tx, err := b.db.Begin(true)
 	if err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	defer tx.Rollback() //nolint:errcheck // error checking is not needed.
 
-Outer:
 	for i := range rr {
-		for id := range expIDs {
-			if rr[i].ID == expIDs[id] {
-				continue Outer
-			}
-		}
-
 		if err := tx.DeleteStruct(rr[i]); err != nil {
 			// unlikely to happen
-			return err
+			return b.detectErr(err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	return nil
 }
 
-// CleanUpErr returns error channel.
-func (b BBoltStore) CleanUpErr() <-chan error {
-	return b.errChan
+// CleanupErr returns error channel.
+func (b BoltStore) CleanupErr() <-chan error {
+	return b.errCh
 }
 
-// Close closes BBoltStore.
-func (b *BBoltStore) Close() error {
-	close(b.errChan)
-	close(b.closeChan)
+// Close closes BoltStore.
+func (b *BoltStore) Close() error {
+	b.closeCh <- struct{}{}
+	close(b.closeCh)
+	close(b.errCh)
 
 	return nil
 }
 
 // cleanUp removes all expired records from the store.
-func (b *BBoltStore) cleanUp() error {
-	var rr []*record
-	if err := b.db.All(&rr); err != nil {
-		// unlikely to happen
-		return err
-	}
+func (b *BoltStore) cleanUp() error {
+	matcher := q.Lte("ExpiresAt", time.Now())
 
-	n := time.Now()
+	var rr []*record
+	if err := b.db.Select(matcher).Find(&rr); err != nil {
+		return b.detectErr(err)
+	}
 
 	tx, err := b.db.Begin(true)
 	if err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	defer tx.Rollback() //nolint:errcheck // error checking is not needed.
 
 	for i := range rr {
-		if rr[i].ExpiresAt.Before(n) {
-			if err := tx.DeleteStruct(rr[i]); err != nil {
-				// unlikely to happen
-				return err
-			}
+		if err := tx.DeleteStruct(rr[i]); err != nil {
+			// unlikely to happen
+			return b.detectErr(err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		// unlikely to happen
-		return err
+		return b.detectErr(err)
 	}
 
 	return nil
 }
 
-// record is used to store session data in bbolt store.
+// detectError is a helper that transforms errors based on what this application
+// needs.
+func (b *BoltStore) detectErr(err error) error {
+	if errors.Is(err, storm.ErrNotFound) {
+		return nil
+	}
+
+	return err
+}
+
+// record is used to store session data in bolt store.
 type record struct {
+	// ID specifies a unique ID used to find this session
+	// in the store.
+	ID string `json:"id"`
+
 	// Current specifies whether this session's ID
 	// matches the ID stored in the request's cookie or not.
 	Current bool `json:"current"`
@@ -248,10 +243,6 @@ type record struct {
 	// session should become invalid and be deleted
 	// from the store.
 	ExpiresAt time.Time `json:"expires_at"`
-
-	// ID specifies a unique ID used to find this session
-	// in the store.
-	ID string `json:"id" storm:"id"`
 
 	// UserKey specifies a non-unique key used to find all
 	// sessions of the same user.
