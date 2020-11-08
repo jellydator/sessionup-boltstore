@@ -67,20 +67,21 @@ func Test_New(t *testing.T) {
 	assert.NotNil(t, s.closeCh)
 
 	// auto cleanUp deletes old records
-	r1 = stubRecord("ABC", "1", time.Now())
-	require.NoError(t, s.db.Save(&r1))
+	r2 := stubRecord("ABC", "1", time.Now())
+	require.NoError(t, s.db.Save(&r2))
 
-	time.Sleep(time.Millisecond * 30)
+	assert.Eventually(t, func() bool {
+		c, err = s.db.Count(&record{})
+		require.NoError(t, err)
 
-	c, err = s.db.Count(&record{})
-	require.NoError(t, err)
-	assert.Zero(t, c)
+		return c == 0
+	}, time.Second, time.Millisecond*5)
 
 	// close closes auto cleanUp
 	s.Close()
 
-	r2 := stubRecord("ABC", "1", time.Now())
-	require.NoError(t, s.db.Save(&r2))
+	r3 := stubRecord("ABC", "1", time.Now())
+	require.NoError(t, s.db.Save(&r3))
 
 	time.Sleep(time.Millisecond * 30)
 
