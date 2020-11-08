@@ -1,4 +1,8 @@
-# sessionup-boltstore
+
+# sessionup-boltstore ✨
+[![Test coverage](http://gocover.io/_badge/github.com/davseby/sessionup-boltstore)](https://gocover.io/github.com/davseby/sessionup-boltstore)
+[![Go Report Card](https://goreportcard.com/badge/github.com/davseby/sessionup-boltstore)](https://goreportcard.com/report/github.com/davseby/sessionup-boltstore)
+
 This is an [Bolt](https://github.com/boltdb/bolt) session store implementation for [sessionup](https://github.com/swithek/sessionup)
 
 ## Installation

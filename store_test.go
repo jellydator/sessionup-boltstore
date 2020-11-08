@@ -59,7 +59,7 @@ func Test_New(t *testing.T) {
 	db, err = bolt.Open(filepath.Join(t.TempDir(), "test2.db"), 0600, nil)
 	require.NoError(t, err)
 
-	s, err = New(db, "b", time.Millisecond*20)
+	s, err = New(db, "b", time.Millisecond*5)
 	require.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.NotNil(t, s.db)
@@ -77,10 +77,10 @@ func Test_New(t *testing.T) {
 	assert.Zero(t, c)
 
 	// close closes auto cleanUp
+	s.Close()
+
 	r2 := stubRecord("ABC", "1", time.Now())
 	require.NoError(t, s.db.Save(&r2))
-
-	s.Close()
 
 	time.Sleep(time.Millisecond * 30)
 
