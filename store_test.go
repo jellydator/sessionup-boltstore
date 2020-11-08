@@ -249,7 +249,7 @@ func (s *Suite) Test_BoltStore_DeleteByUserKey() {
 	}
 }
 
-func Test_BoltStore_CleanUpErr(t *testing.T) {
+func Test_BoltStore_CleanupErr(t *testing.T) {
 	b := BoltStore{
 		errCh: make(chan error),
 	}
@@ -265,9 +265,9 @@ func Test_BoltStore_CleanUpErr(t *testing.T) {
 	assert.Equal(t, err, <-b.CleanupErr())
 }
 
-func (s *Suite) Test_BoltStore_cleanUp() {
+func (s *Suite) Test_BoltStore_cleanup() {
 	// not found
-	err := s.st.cleanUp()
+	err := s.st.cleanup()
 	s.Assert().NoError(err)
 
 	// success
@@ -281,7 +281,7 @@ func (s *Suite) Test_BoltStore_cleanUp() {
 		}
 	}
 
-	err = s.st.cleanUp()
+	err = s.st.cleanup()
 	s.Assert().NoError(err)
 
 	var act []*record
@@ -291,6 +291,12 @@ func (s *Suite) Test_BoltStore_cleanUp() {
 	for i := range act {
 		equalSession(s.T(), res[i], act[i].extractSession())
 	}
+}
+
+func Test_BoltStore_detectErr(t *testing.T) {
+	assert.NoError(t, BoltStore{}.detectErr(storm.ErrNotFound))
+	assert.NoError(t, BoltStore{}.detectErr(nil))
+	assert.Equal(t, assert.AnError, BoltStore{}.detectErr(assert.AnError))
 }
 
 func Test_newRecord(t *testing.T) {

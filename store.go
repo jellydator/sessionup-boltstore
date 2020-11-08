@@ -55,7 +55,7 @@ func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore,
 				case <-b.closeCh:
 					return
 				case <-t.C:
-					if err := b.cleanUp(); err != nil {
+					if err := b.cleanup(); err != nil {
 						// unlikely to happen
 						b.errCh <- err
 					}
@@ -71,11 +71,9 @@ func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore,
 // that it is deleted when expiration time is due.
 func (b *BoltStore) Create(_ context.Context, s sessionup.Session) error {
 	var r record
-	if err := b.db.One("ID", s.ID, &r); err != nil {
-		if err = b.detectErr(err); err != nil {
-			// unlikely to happen
-			return err
-		}
+	if err := b.detectErr(b.db.One("ID", s.ID, &r)); err != nil {
+		// unlikely to happen
+		return err
 	}
 
 	if r.ID == s.ID {
@@ -83,12 +81,8 @@ func (b *BoltStore) Create(_ context.Context, s sessionup.Session) error {
 	}
 
 	r = newRecord(s)
-	if err := b.db.Save(&r); err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
 
-	return nil
+	return b.detectErr(b.db.Save(&r))
 }
 
 // FetchByID retrieves a session from the store by the provided ID.
@@ -122,51 +116,23 @@ func (b *BoltStore) FetchByUserKey(_ context.Context, key string) ([]sessionup.S
 // DeleteByID deletes the session from the store by the provided ID.
 // If session is not found, this function will be no-op.
 func (b *BoltStore) DeleteByID(_ context.Context, id string) error {
-	r := record{}
-	if err := b.db.One("ID", id, &r); err != nil {
-		return b.detectErr(err)
-	}
-
-	if err := b.db.DeleteStruct(&r); err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
-
-	return nil
+	return b.detectErr(b.db.Select(
+		q.Eq("ID", id),
+	).Delete(&record{}))
 }
 
 // DeleteByUserKey deletes all sessions associated with the provided user key,
 // except those whose IDs are provided as last argument.
 // If none are found, this function will no-op.
 func (b *BoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
-	matcher := q.And(q.Eq("UserKey", key), q.Not(q.In("ID", expIDs)))
-
-	var rr []*record
-	if err := b.db.Select(matcher).Find(&rr); err != nil {
-		return b.detectErr(err)
-	}
-
-	tx, err := b.db.Begin(true)
-	if err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
-
-	defer tx.Rollback() //nolint:errcheck // error checking is not needed.
-
-	for i := range rr {
-		if err := tx.DeleteStruct(rr[i]); err != nil {
-			// unlikely to happen
-			return b.detectErr(err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
-
-	return nil
+	return b.detectErr(b.db.Select(
+		q.And(
+			q.Eq("UserKey", key),
+			q.Not(
+				q.In("ID", expIDs),
+			),
+		),
+	).Delete(&record{}))
 }
 
 // CleanupErr returns error channel.
@@ -184,40 +150,15 @@ func (b *BoltStore) Close() error {
 }
 
 // cleanUp removes all expired records from the store.
-func (b *BoltStore) cleanUp() error {
-	matcher := q.Lte("ExpiresAt", time.Now())
-
-	var rr []*record
-	if err := b.db.Select(matcher).Find(&rr); err != nil {
-		return b.detectErr(err)
-	}
-
-	tx, err := b.db.Begin(true)
-	if err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
-
-	defer tx.Rollback() //nolint:errcheck // error checking is not needed.
-
-	for i := range rr {
-		if err := tx.DeleteStruct(rr[i]); err != nil {
-			// unlikely to happen
-			return b.detectErr(err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		// unlikely to happen
-		return b.detectErr(err)
-	}
-
-	return nil
+func (b *BoltStore) cleanup() error {
+	return b.detectErr(b.db.Select(
+		q.Lte("ExpiresAt", time.Now()),
+	).Delete(&record{}))
 }
 
 // detectError is a helper that transforms errors based on what this application
 // needs.
-func (b *BoltStore) detectErr(err error) error {
+func (b BoltStore) detectErr(err error) error {
 	if errors.Is(err, storm.ErrNotFound) {
 		return nil
 	}
