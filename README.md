@@ -1,5 +1,6 @@
 
-# sessionup-boltstore ✨
+# sessionup-boltstore
+[![GoDoc](https://godoc.org/github.com/davseby/sessionup-boltstore?status.png)](https://godoc.org/github.com/davseby/sessionup-boltstore)
 [![Test coverage](http://gocover.io/_badge/github.com/davseby/sessionup-boltstore)](https://gocover.io/github.com/davseby/sessionup-boltstore)
 [![Go Report Card](https://goreportcard.com/badge/github.com/davseby/sessionup-boltstore)](https://goreportcard.com/report/github.com/davseby/sessionup-boltstore)
 
