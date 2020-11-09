@@ -24,7 +24,7 @@ func Test_New(t *testing.T) {
 	require.Equal(t, errors.New("invalid bucket name"), err)
 	assert.Nil(t, s)
 
-	// invalid clean up interval
+	// invalid cleanup interval
 	s, err = New(&bolt.DB{}, "ab", time.Second*-1)
 	require.Equal(t, errors.New("invalid cleanup interval"), err)
 	assert.Nil(t, s)
@@ -66,7 +66,7 @@ func Test_New(t *testing.T) {
 	assert.NotNil(t, s.errCh)
 	assert.NotNil(t, s.closeCh)
 
-	// auto cleanUp deletes old records
+	// auto cleanup deletes old records
 	r2 := stubRecord("ABC", "1", time.Now())
 	require.NoError(t, s.db.Save(&r2))
 
@@ -77,7 +77,7 @@ func Test_New(t *testing.T) {
 		return c == 0
 	}, time.Second, time.Millisecond*5)
 
-	// close closes auto cleanUp
+	// Close stops auto cleanup process
 	s.Close()
 
 	r3 := stubRecord("ABC", "1", time.Now())

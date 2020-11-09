@@ -21,9 +21,9 @@ type BoltStore struct {
 }
 
 // New creates a returns a fresh intance of BoltStore.
-// bucket parameter is a bucket name in which you want your sessions
-// to be stored and managed. Cannot be an empty string.
-// cleanupInterval parameter is an interval time between each clean up. If
+// Bucket parameter determines bucket name that is used to store and manage
+// sessions, it cannot be an empty string.
+// Cleanup interval parameter is an interval time between each clean up. If
 // this interval is equal to zero, cleanup won't be executed. Cannot be less than
 // zero.
 func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore, error) {
@@ -135,12 +135,16 @@ func (b *BoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...str
 	).Delete(&record{}))
 }
 
-// CleanupErr returns error channel.
+// CleanupErr returns a channel that should be used only for receiving errors
+// that occured during cleanup process. Whenever the cleanup service is active,
+// errors from this channel have to be drained, otherwise cleanup won't be able
+// to continue it's process.
 func (b BoltStore) CleanupErr() <-chan error {
 	return b.errCh
 }
 
-// Close closes BoltStore.
+// Close stops BoltStore cleanup service.
+// It always returns nil as an error, used to implement io.Closer interface.
 func (b *BoltStore) Close() error {
 	b.closeCh <- struct{}{}
 	close(b.closeCh)
