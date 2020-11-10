@@ -21,12 +21,12 @@ import (
 func Test_New(t *testing.T) {
 	// invalid bucket
 	s, err := New(&bolt.DB{}, "", time.Second)
-	require.Equal(t, errors.New("invalid bucket name"), err)
+	require.Equal(t, ErrInvalidBucket, err)
 	assert.Nil(t, s)
 
 	// invalid cleanup interval
 	s, err = New(&bolt.DB{}, "ab", time.Second*-1)
-	require.Equal(t, errors.New("invalid cleanup interval"), err)
+	require.Equal(t, ErrInvalidInterval, err)
 	assert.Nil(t, s)
 
 	// invalid db
@@ -305,7 +305,6 @@ func Test_newRecord(t *testing.T) {
 	s := stubSession("123", "456", n)
 
 	r := record{
-		Current:   s.Current,
 		CreatedAt: s.CreatedAt,
 		ExpiresAt: s.ExpiresAt,
 		ID:        s.ID,
@@ -324,7 +323,6 @@ func Test_record_extractSession(t *testing.T) {
 	s := stubSession("123", "456", n)
 
 	r := record{
-		Current:   s.Current,
 		CreatedAt: s.CreatedAt,
 		ExpiresAt: s.ExpiresAt,
 		ID:        s.ID,

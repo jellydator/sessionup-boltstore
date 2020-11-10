@@ -13,6 +13,14 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+var (
+	// ErrInvalidBucket is returned when invalid bucket name is provided.
+	ErrInvalidBucket = errors.New("invalid bucket name")
+
+	// ErrInvalidInterval is returned when invalid cleanup interval is provided.
+	ErrInvalidInterval = errors.New("invalid cleanup interval")
+)
+
 // BoltStore is a bolt implementation of sessionup.Store.
 type BoltStore struct {
 	db      storm.Node
@@ -20,19 +28,19 @@ type BoltStore struct {
 	closeCh chan struct{}
 }
 
-// New creates a returns a fresh intance of BoltStore.
-// Bucket parameter determines bucket name that is used to store and manage
+// New creates and returns a fresh intance of BoltStore.
+// Bucket parameter determines bucket name which is used to store and manage
 // sessions, it cannot be an empty string.
 // Cleanup interval parameter is an interval time between each clean up. If
 // this interval is equal to zero, cleanup won't be executed. Cannot be less than
 // zero.
 func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore, error) {
 	if bucket == "" {
-		return nil, errors.New("invalid bucket name")
+		return nil, ErrInvalidBucket
 	}
 
 	if cleanupInterval < 0 {
-		return nil, errors.New("invalid cleanup interval")
+		return nil, ErrInvalidInterval
 	}
 
 	sdb, err := storm.Open("", storm.UseDB(db))
@@ -126,24 +134,22 @@ func (b *BoltStore) DeleteByID(_ context.Context, id string) error {
 // If none are found, this function will no-op.
 func (b *BoltStore) DeleteByUserKey(_ context.Context, key string, expIDs ...string) error {
 	return b.detectErr(b.db.Select(
-		q.And(
-			q.Eq("UserKey", key),
-			q.Not(
-				q.In("ID", expIDs),
-			),
+		q.Eq("UserKey", key),
+		q.Not(
+			q.In("ID", expIDs),
 		),
 	).Delete(&record{}))
 }
 
-// CleanupErr returns a channel that should be used only for receiving errors
+// CleanupErr returns a channel that should be used to read and handle errors
 // that occured during cleanup process. Whenever the cleanup service is active,
-// errors from this channel have to be drained, otherwise cleanup won't be able
-// to continue it's process.
+// errors from this channel will have to be drained, otherwise cleanup won't be able
+// to continue its process.
 func (b BoltStore) CleanupErr() <-chan error {
 	return b.errCh
 }
 
-// Close stops BoltStore cleanup service.
+// Close stops the cleanup service.
 // It always returns nil as an error, used to implement io.Closer interface.
 func (b *BoltStore) Close() error {
 	b.closeCh <- struct{}{}
@@ -153,15 +159,14 @@ func (b *BoltStore) Close() error {
 	return nil
 }
 
-// cleanUp removes all expired records from the store.
+// cleanup removes all expired records from the store by their expiration time.
 func (b *BoltStore) cleanup() error {
 	return b.detectErr(b.db.Select(
 		q.Lte("ExpiresAt", time.Now()),
 	).Delete(&record{}))
 }
 
-// detectError is a helper that transforms errors based on what this application
-// needs.
+// detectError is a helper that transforms errors.
 func (b BoltStore) detectErr(err error) error {
 	if errors.Is(err, storm.ErrNotFound) {
 		return nil
@@ -175,10 +180,6 @@ type record struct {
 	// ID specifies a unique ID used to find this session
 	// in the store.
 	ID string `json:"id"`
-
-	// Current specifies whether this session's ID
-	// matches the ID stored in the request's cookie or not.
-	Current bool `json:"current"`
 
 	// CreatedAt specifies a point in time when this session
 	// was created.
@@ -208,7 +209,6 @@ type record struct {
 // newRecord creates a fresh instance of new record.
 func newRecord(s sessionup.Session) record {
 	r := record{
-		Current:   s.Current,
 		CreatedAt: s.CreatedAt,
 		ExpiresAt: s.ExpiresAt,
 		ID:        s.ID,
@@ -225,7 +225,6 @@ func newRecord(s sessionup.Session) record {
 // extractSession returns sessionup.Session data from the record.
 func (r record) extractSession() sessionup.Session {
 	s := sessionup.Session{
-		Current:   r.Current,
 		CreatedAt: r.CreatedAt,
 		ExpiresAt: r.ExpiresAt,
 		ID:        r.ID,
