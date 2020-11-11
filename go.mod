@@ -1,4 +1,4 @@
-module bolstore
+module github.com/davseby/sessionup-boltstore
 
 go 1.15
 
