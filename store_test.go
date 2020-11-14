@@ -44,6 +44,7 @@ func Test_New(t *testing.T) {
 	assert.NotNil(t, s.db)
 	assert.NotNil(t, s.errCh)
 	assert.NotNil(t, s.closeCh)
+	assert.Equal(t, "0s", s.cleanupInterval.String())
 
 	// auto cleanup doesn't delete old records
 	r1 := stubRecord("ABC", "1", time.Now())
@@ -65,6 +66,7 @@ func Test_New(t *testing.T) {
 	assert.NotNil(t, s.db)
 	assert.NotNil(t, s.errCh)
 	assert.NotNil(t, s.closeCh)
+	assert.Equal(t, time.Millisecond*5, s.cleanupInterval)
 
 	// auto cleanup deletes old records
 	r2 := stubRecord("ABC", "1", time.Now())
@@ -77,7 +79,7 @@ func Test_New(t *testing.T) {
 		return c == 0
 	}, time.Second, time.Millisecond*5)
 
-	// Close stops auto cleanup process
+	// close stops auto cleanup process
 	s.Close()
 
 	r3 := stubRecord("ABC", "1", time.Now())
@@ -88,6 +90,31 @@ func Test_New(t *testing.T) {
 	c, err = s.db.Count(&record{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, c)
+
+	// closed db error when trying to perform cleanup
+	db, err = bolt.Open(filepath.Join(t.TempDir(), "test3.db"), 0600, nil)
+	require.NoError(t, err)
+
+	s, err = New(db, "c", time.Millisecond*5)
+	require.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.NotNil(t, s.db)
+	assert.NotNil(t, s.errCh)
+	assert.NotNil(t, s.closeCh)
+	assert.Equal(t, time.Millisecond*5, s.cleanupInterval)
+
+	ch := make(chan struct{})
+
+	go func() {
+		err := <-s.CleanupErr()
+		assert.Error(t, err)
+
+		close(ch)
+	}()
+
+	db.Close()
+
+	<-ch
 }
 
 func Test_Store(t *testing.T) {
@@ -149,6 +176,22 @@ func (s *Suite) Test_BoltStore_Create() {
 	c, err := s.st.db.Count(&record{})
 	s.Require().NoError(err)
 	s.Require().Equal(1, c)
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	err = bs.Create(context.Background(), s2)
+	s.Assert().Error(err)
+
 }
 
 func (s *Suite) Test_BoltStore_FetchByID() {
@@ -166,6 +209,23 @@ func (s *Suite) Test_BoltStore_FetchByID() {
 	s.Require().True(ok)
 	s.Assert().NoError(err)
 	equalSession(s.T(), r1.extractSession(), s1)
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	s2, ok, err := bs.FetchByID(context.Background(), "1")
+	s.Require().Empty(s2)
+	s.Require().False(ok)
+	s.Assert().Error(err)
 }
 
 func (s *Suite) Test_BoltStore_FetchByUserKey() {
@@ -192,6 +252,22 @@ func (s *Suite) Test_BoltStore_FetchByUserKey() {
 	for i := range res {
 		equalSession(s.T(), res[i], act[i])
 	}
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	act, err = bs.FetchByUserKey(context.Background(), "1")
+	s.Require().Nil(act)
+	s.Assert().Error(err)
 }
 
 func (s *Suite) Test_BoltStore_DeleteByID() {
@@ -220,6 +296,21 @@ func (s *Suite) Test_BoltStore_DeleteByID() {
 	for i := range res {
 		equalSession(s.T(), res[i], act[i].extractSession())
 	}
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	err = bs.DeleteByID(context.Background(), "1")
+	s.Assert().Error(err)
 }
 
 func (s *Suite) Test_BoltStore_DeleteByUserKey() {
@@ -248,6 +339,21 @@ func (s *Suite) Test_BoltStore_DeleteByUserKey() {
 	for i := range act {
 		equalSession(s.T(), res[i], act[i].extractSession())
 	}
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	err = bs.DeleteByUserKey(context.Background(), "1")
+	s.Assert().Error(err)
 }
 
 func Test_BoltStore_CleanupErr(t *testing.T) {
@@ -292,6 +398,21 @@ func (s *Suite) Test_BoltStore_cleanup() {
 	for i := range act {
 		equalSession(s.T(), res[i], act[i].extractSession())
 	}
+
+	// closed db
+	db, err := bolt.Open(filepath.Join(s.T().TempDir(), "test.db"), 0600, nil)
+	s.Require().NoError(err)
+	s.Require().NotNil(db)
+
+	sdb, err := storm.Open("", storm.UseDB(db))
+	s.Require().NoError(err)
+
+	bs := &BoltStore{db: sdb}
+
+	db.Close()
+
+	err = bs.cleanup()
+	s.Assert().Error(err)
 }
 
 func Test_BoltStore_detectErr(t *testing.T) {
@@ -310,6 +431,7 @@ func Test_newRecord(t *testing.T) {
 		ID:        s.ID,
 		UserKey:   s.UserKey,
 		IP:        s.IP,
+		Meta:      s.Meta,
 	}
 
 	r.Agent.OS = s.Agent.OS
@@ -328,6 +450,7 @@ func Test_record_extractSession(t *testing.T) {
 		ID:        s.ID,
 		UserKey:   s.UserKey,
 		IP:        s.IP,
+		Meta:      s.Meta,
 	}
 
 	r.Agent.OS = s.Agent.OS
@@ -341,6 +464,7 @@ func equalSession(t *testing.T, exp, act sessionup.Session) {
 	assert.Equal(t, exp.ID, act.ID)
 	assert.True(t, act.ExpiresAt.Equal(exp.ExpiresAt))
 	assert.True(t, act.CreatedAt.Equal(exp.CreatedAt))
+	assert.Equal(t, exp.Meta, act.Meta)
 	assert.Equal(t, exp.Agent.OS, act.Agent.OS)
 	assert.Equal(t, exp.Agent.Browser, act.Agent.Browser)
 	if !reflect.DeepEqual(exp.IP, act.IP) {
@@ -355,6 +479,9 @@ func stubSession(uk, id string, exp time.Time) sessionup.Session {
 		ExpiresAt: exp,
 		CreatedAt: time.Now(),
 		IP:        net.ParseIP("127.0.0.1"),
+		Meta: map[string]string{
+			"123": "test",
+		},
 	}
 
 	ns.Agent.OS = "gnu/linu"
