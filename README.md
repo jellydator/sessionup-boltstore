@@ -36,15 +36,15 @@ if err != nil {
 manager := sessionup.NewManager(store)
 ```
 
-Don't forget to handle cleanup errors by using CleanupErr channel. Channel 
-should be used only for receiving errors. Whenever the cleanup service is active, 
-errors from this channel will have to be drained, otherwise cleanup won't be able 
-to continue its process.
+Don't forget to handle cleanup errors by using CleanupErr method. Channel should 
+be used only for receiving errors. Whenever the cleanup service is active, errors 
+from this channel will have to be drained, otherwise cleanup won't be able to 
+continue its process.
 
 ```go
 for {
       select {
-            case err := <-store.CleanUpErr():
+            case err := <-store.CleanupErr():
                   // handle err
       }
 }

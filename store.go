@@ -23,9 +23,10 @@ var (
 
 // BoltStore is a bolt implementation of sessionup.Store.
 type BoltStore struct {
-	db      storm.Node
-	errCh   chan error
-	closeCh chan struct{}
+	db              storm.Node
+	errCh           chan error
+	closeCh         chan struct{}
+	cleanupInterval time.Duration
 }
 
 // New creates and returns a fresh intance of BoltStore.
@@ -49,9 +50,10 @@ func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore,
 	}
 
 	b := &BoltStore{
-		db:      sdb.From(bucket),
-		errCh:   make(chan error),
-		closeCh: make(chan struct{}),
+		db:              sdb.From(bucket),
+		errCh:           make(chan error),
+		closeCh:         make(chan struct{}),
+		cleanupInterval: cleanupInterval,
 	}
 
 	if cleanupInterval != 0 {
@@ -64,7 +66,6 @@ func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore,
 					return
 				case <-t.C:
 					if err := b.cleanup(); err != nil {
-						// unlikely to happen
 						b.errCh <- err
 					}
 				}
@@ -80,7 +81,6 @@ func New(db *bolt.DB, bucket string, cleanupInterval time.Duration) (*BoltStore,
 func (b *BoltStore) Create(_ context.Context, s sessionup.Session) error {
 	var r record
 	if err := b.detectErr(b.db.One("ID", s.ID, &r)); err != nil {
-		// unlikely to happen
 		return err
 	}
 
@@ -152,7 +152,10 @@ func (b BoltStore) CleanupErr() <-chan error {
 // Close stops the cleanup service.
 // It always returns nil as an error, used to implement io.Closer interface.
 func (b *BoltStore) Close() error {
-	b.closeCh <- struct{}{}
+	if b.cleanupInterval != 0 {
+		b.closeCh <- struct{}{}
+	}
+
 	close(b.closeCh)
 	close(b.errCh)
 
@@ -204,6 +207,10 @@ type record struct {
 		OS      string `json:"os"`
 		Browser string `json:"browser"`
 	} `json:"agent"`
+
+	// Meta specifies a map of metadata associated with
+	// the session.
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 // newRecord creates a fresh instance of new record.
@@ -214,6 +221,7 @@ func newRecord(s sessionup.Session) record {
 		ID:        s.ID,
 		UserKey:   s.UserKey,
 		IP:        s.IP,
+		Meta:      s.Meta,
 	}
 
 	r.Agent.OS = s.Agent.OS
@@ -230,6 +238,7 @@ func (r record) extractSession() sessionup.Session {
 		ID:        r.ID,
 		UserKey:   r.UserKey,
 		IP:        r.IP,
+		Meta:      r.Meta,
 	}
 
 	s.Agent.OS = r.Agent.OS
