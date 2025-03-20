@@ -1,17 +1,17 @@
 
 # sessionup-boltstore
-[![GoDoc](https://godoc.org/github.com/davseby/sessionup-boltstore?status.png)](https://godoc.org/github.com/davseby/sessionup-boltstore)
-[![Test coverage](http://gocover.io/_badge/github.com/davseby/sessionup-boltstore)](https://gocover.io/github.com/davseby/sessionup-boltstore)
-[![Go Report Card](https://goreportcard.com/badge/github.com/davseby/sessionup-boltstore)](https://goreportcard.com/report/github.com/davseby/sessionup-boltstore)
+[![GoDoc](https://godoc.org/github.com/jellydator/sessionup-boltstore?status.png)](https://godoc.org/github.com/jellydator/sessionup-boltstore)
+[![Test coverage](http://gocover.io/_badge/github.com/jellydator/sessionup-boltstore)](https://gocover.io/github.com/jellydator/sessionup-boltstore)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jellydator/sessionup-boltstore)](https://goreportcard.com/report/github.com/jellydator/sessionup-boltstore)
 
-This is an [Bolt](https://github.com/boltdb/bolt) session store implementation for [sessionup](https://github.com/swithek/sessionup)
+This is an [Bolt](https://github.com/boltdb/bolt) session store implementation for [sessionup](https://github.com/jellydator/sessionup)
 
 ## Installation
 
 To install simply use:
 
 ```
-go get github.com/davseby/sessionup-boltstore
+go get github.com/jellydator/sessionup-boltstore
 ```
 
 ## Usage

@@ -9,7 +9,7 @@ import (
 	"github.com/asdine/storm/v3/q"
 
 	"github.com/asdine/storm/v3"
-	"github.com/swithek/sessionup"
+	"github.com/jellydator/sessionup"
 	bolt "go.etcd.io/bbolt"
 )
 
